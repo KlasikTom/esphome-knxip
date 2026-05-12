@@ -6,7 +6,7 @@
 namespace esphome {
 namespace knxip {
 
-enum class SensorDPT { DPT9, DPT14, DPT5 };
+enum SensorDPT { DPT9, DPT14, DPT5 };
 
 class KNXIPSensor : public sensor::Sensor, public Component {
  public:

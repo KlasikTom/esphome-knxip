@@ -10,6 +10,10 @@ CONF_MULTICAST_GROUP    = "multicast_group"
 CONF_PORT               = "port"
 MULTI_CONF              = False
 
+# Tyto závislosti zajistí že hlavičkové soubory jsou dostupné
+# pro všechny platform soubory knxip komponenty
+AUTO_LOAD   = ['binary_sensor', 'sensor', 'switch', 'output']
+
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(KNXIPComponent),
     cv.Required(CONF_INDIVIDUAL_ADDRESS): cv.string,
