@@ -13,11 +13,10 @@ CONF_KNXIP_ID = "knxip_id"
 
 DEPENDENCIES = ['knxip']
 
-
 DPT_MAP = {
-    "9":  knxip_ns.DPT9,
-    "14": knxip_ns.DPT14,
-    "5":  knxip_ns.DPT5,
+    "9":  SensorDPT.DPT9,
+    "14": SensorDPT.DPT14,
+    "5":  SensorDPT.DPT5,
 }
 
 CONFIG_SCHEMA = sensor.sensor_schema(KNXIPSensor).extend({

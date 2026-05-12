@@ -1,18 +1,16 @@
-# esphome-knxip
-
 # ESPHome KNX/IP Component
 
 Nativní KNX/IP komponenta pro ESP32 — žádné externí knihovny, čistý UDP multicast dle KNXnet/IP standardu (ISO 22510).
 
 ## Funkce
 
-* KNXnet/IP Routing (multicast 224.0.23.12:3671)
-* DPT 1.x — boolean (spínač, tlačítko)
-* DPT 5.x — 8-bit unsigned (stmívač 0–255, procenta)
-* DPT 9.x — 2-byte KNX float (teplota, vlhkost, CO₂...)
-* DPT 14.x — IEEE754 4-byte float (výkon, energie...)
-* Příjem i vysílání telegramů
-* Přímé napojení na GPIO, I²C/SPI senzory, PWM/SSR výstupy, display
+- KNXnet/IP Routing (multicast 224.0.23.12:3671)
+- DPT 1.x — boolean (spínač, tlačítko)
+- DPT 5.x — 8-bit unsigned (stmívač 0–255, procenta)
+- DPT 9.x — 2-byte KNX float (teplota, vlhkost, CO₂...)
+- DPT 14.x — IEEE754 4-byte float (výkon, energie...)
+- Příjem i vysílání telegramů
+- Přímé napojení na GPIO, I²C/SPI senzory, PWM/SSR výstupy, display
 
 ---
 
@@ -171,12 +169,12 @@ sensor:
       on_value:
         - lambda: |-
             // Pošli hodnotu na KNX GA 1/2/16
-            id(knxip_comp).send_dpt9(0x0910, x);
+            id(knxip_comp).send_dpt9("1/2/16", x);
     humidity:
       name: "BME280 vlhkost"
       on_value:
         - lambda: |-
-            id(knxip_comp).send_dpt9(0x0C08, x);
+            id(knxip_comp).send_dpt9("1/6/8", x);
 
 knxip:
   id: knxip_comp
@@ -197,7 +195,7 @@ sensor:
     cs_pin: GPIO5
     on_value:
       - lambda: |-
-          id(knxip_comp).send_dpt9(0x0912, x);  # GA 1/2/18
+          id(knxip_comp).send_dpt9("1/2/18", x);  # GA 1/2/18
 ```
 
 ### 1-Wire / DS18B20
@@ -212,7 +210,7 @@ sensor:
     name: "DS18B20 teplota"
     on_value:
       - lambda: |-
-          id(knxip_comp).send_dpt9(0x0910, x);
+          id(knxip_comp).send_dpt9("1/2/16", x);
 ```
 
 ---
@@ -324,11 +322,11 @@ touchscreen:
           auto tp = touch.touches[0];
           ESP_LOGI("touch", "x=%d y=%d", tp.x, tp.y);
           // Tlačítko ZAP (x: 10-150, y: 140-190)
-          if (tp.x > 10 &&&& tp.x < 150 &&&& tp.y > 140 &&&& tp.y < 190)
-              id(knxip_comp).send_bool(0x0801, true);   // GA 1/4/1 ZAP
+          if (tp.x > 10 && tp.x < 150 && tp.y > 140 && tp.y < 190)
+              id(knxip_comp).send_bool("1/4/1", true);   // GA 1/4/1 ZAP
           // Tlačítko VYP (x: 170-310, y: 140-190)
-          if (tp.x > 170 &&&& tp.x < 310 &&&& tp.y > 140 &&&& tp.y < 190)
-              id(knxip_comp).send_bool(0x0801, false);  // GA 1/4/1 VYP
+          if (tp.x > 170 && tp.x < 310 && tp.y > 140 && tp.y < 190)
+              id(knxip_comp).send_bool("1/4/1", false);  // GA 1/4/1 VYP
 ```
 
 ---
@@ -337,7 +335,7 @@ touchscreen:
 
 ```cpp
 // V lambda nebo on_value:
-id(knxip_comp).send_bool(0x0801, true);        // GA 1/4/1, bool
+id(knxip_comp).send_bool("1/4/1", true);        // GA 1/4/1, bool
 id(knxip_comp).send_dpt9(0x0910, 21.5f);       // GA 1/2/16, teplota
 id(knxip_comp).send_dpt5(0x0915, 128.0f);      // GA 1/2/21, 0-255
 id(knxip_comp).send_dpt14(0x0A01, 3500.0f);    // GA 1/5/1, výkon W
@@ -419,12 +417,238 @@ components/knxip/
 
 ## Podporované DPT typy
 
-|DPT|Popis|Příklad použití|
-|-|-|-|
-|1.x|Boolean|Spínač, pohyb, okno|
-|5.x|8-bit uint (0–255)|Jas, poloha žaluzie|
-|9.x|2-byte KNX float|Teplota, vlhkost, CO₂|
-|14.x|IEEE754 4-byte float|Výkon W, energie kWh|
+| DPT   | Popis                  | Příklad použití             |
+|-------|------------------------|-----------------------------|
+| 1.x   | Boolean                | Spínač, pohyb, okno         |
+| 5.x   | 8-bit uint (0–255)     | Jas, poloha žaluzie         |
+| 9.x   | 2-byte KNX float       | Teplota, vlhkost, CO₂       |
+| 14.x  | IEEE754 4-byte float   | Výkon W, energie kWh        |
 
 
+---
 
+## Jak správně použít id() v lambdách
+
+ESPHome generuje `id(xxx)` jako pointer na komponentu. Aby fungovalo
+`id(knxip_comp).send_dpt9(...)`, musí mít komponenta `id:` v YAML:
+
+```yaml
+knxip:
+  id: knxip_comp          # ← toto je klíčové!
+  individual_address: "1.1.50"
+```
+
+Pak v lambdě:
+```cpp
+// String GA — nejjednodušší, žádný hex výpočet
+id(knxip_comp).send_bool("1/1/1", true);
+id(knxip_comp).send_dpt9("1/2/10", 21.5f);
+id(knxip_comp).send_dpt5("1/4/5", 128.0f);    // 0–255
+id(knxip_comp).send_dpt14("1/5/1", 3500.0f);  // IEEE754
+```
+
+---
+
+## Kompletní příklad — ESP32 s BME280 → KNX + GPIO relé
+
+```yaml
+esphome:
+  name: esp32-knxip-demo
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/YOUR_USER/esphome-knxip
+    refresh: 0s
+    components: [ knxip ]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: DEBUG
+api:
+ota:
+  - platform: esphome
+
+# ── KNX/IP ───────────────────────────────────────────────────────────────────
+knxip:
+  id: knxip_comp
+  individual_address: "1.1.50"
+
+# ── I²C senzor → KNX ─────────────────────────────────────────────────────────
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+
+sensor:
+  - platform: bme280_i2c
+    address: 0x76
+    update_interval: 60s
+    temperature:
+      name: "Teplota"
+      on_value:
+        - lambda: id(knxip_comp).send_dpt9("1/2/10", x);
+    humidity:
+      name: "Vlhkost"
+      on_value:
+        - lambda: id(knxip_comp).send_dpt9("1/2/11", x);
+    pressure:
+      name: "Tlak"
+      on_value:
+        - lambda: id(knxip_comp).send_dpt9("1/2/12", x);
+
+  # Příjem hodnot ze sběrnice
+  - platform: knxip
+    name: "Setpoint topení"
+    group_address: "1/8/1"
+    dpt: "9"
+    unit_of_measurement: "°C"
+
+# ── GPIO relé ovládané z KNX ─────────────────────────────────────────────────
+switch:
+  - platform: knxip
+    name: "Relé 1"
+    group_address_command: "1/1/1"
+    group_address_state:   "1/1/2"
+    pin:
+      number: GPIO26
+      inverted: false
+
+  - platform: knxip
+    name: "Relé 2"
+    group_address_command: "1/1/3"
+    pin:
+      number: GPIO27
+
+# ── Stmívač PWM → KNX ────────────────────────────────────────────────────────
+output:
+  - platform: ledc
+    pin: GPIO25
+    id: dimmer_out
+    frequency: 1000Hz
+
+  - platform: knxip
+    id: knx_dimmer
+    group_address: "1/1/20"    # přijímá DPT5 0–255
+
+light:
+  - platform: monochromatic
+    name: "Stmívač"
+    output: knx_dimmer
+```
+
+---
+
+## Tlačítko BUT1 (GPIO34) na Olimex ESP32-POE-ISO
+
+GPIO34 je input-only pin s externím pull-up na desce — při stisku jde na GND (active LOW).
+
+### Varianta A — binární senzor (momentální stav stisknuto/puštěno)
+
+Posílá na KNX `true` při stisku, `false` při puštění:
+
+```yaml
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO34
+      inverted: true      # active LOW - stisk = GND = true
+      mode:
+        input: true
+        # NE pullup/pulldown - GPIO34 nemá interní pull resistory
+    name: "BUT1"
+    filters:
+      - delayed_on: 20ms   # debounce
+      - delayed_off: 20ms
+    on_press:
+      - lambda: id(knxip_comp).send_bool("1/3/1", true);
+    on_release:
+      - lambda: id(knxip_comp).send_bool("1/3/1", false);
+```
+
+### Varianta B — přepínač stavu (toggle on/off)
+
+Každý stisk přepne stav — vhodné pro ovládání světla:
+
+```yaml
+globals:
+  - id: light_state
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO34
+      inverted: true
+      mode:
+        input: true
+    name: "BUT1 toggle"
+    filters:
+      - delayed_on: 20ms
+    on_press:
+      - lambda: |-
+          id(light_state) = !id(light_state);
+          id(knxip_comp).send_bool("1/1/1", id(light_state));
+          ESP_LOGI("but1", "Toggle → %d", id(light_state));
+```
+
+### Varianta C — ovládá KNX switch entitu přímo
+
+Stisk tlačítka přepíná stav KNX switch komponenty:
+
+```yaml
+switch:
+  - platform: knxip
+    id: knx_light
+    name: "Světlo BUT1"
+    group_address_command: "1/1/1"
+    group_address_state:   "1/1/2"
+    pin:
+      number: GPIO26   # volitelné GPIO relé
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO34
+      inverted: true
+      mode:
+        input: true
+    name: "BUT1"
+    filters:
+      - delayed_on: 20ms
+    on_press:
+      - switch.toggle: knx_light
+```
+
+### Varianta D — dlouhý vs krátký stisk
+
+```yaml
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO34
+      inverted: true
+      mode:
+        input: true
+    name: "BUT1 multi"
+    filters:
+      - delayed_on: 20ms
+    on_click:
+      - min_length: 50ms
+        max_length: 350ms
+        then:
+          - lambda: id(knxip_comp).send_bool("1/1/1", true);   # krátký = ZAP
+      - min_length: 500ms
+        max_length: 3000ms
+        then:
+          - lambda: id(knxip_comp).send_bool("1/1/1", false);  # dlouhý = VYP
+```

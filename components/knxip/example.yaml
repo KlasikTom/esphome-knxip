@@ -1,0 +1,85 @@
+esphome:
+  name: esp32-knxip
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/YOUR_USER/esphome-knxip
+    refresh: 0s
+    components: [ knxip ]
+
+# ── KNX/IP core ───────────────────────────────────────────────────────────────
+knxip:
+  individual_address: "1.1.50"
+  # multicast_group: "224.0.23.12"  # default
+  # port: 3671                       # default
+
+# ── Sensory ───────────────────────────────────────────────────────────────────
+sensor:
+  - platform: knxip
+    name: "Teplota obyvak"
+    group_address: "1/2/10"
+    dpt: "9"                    # DPT 9.x = 2-byte KNX float (teplota, vlhkost...)
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+
+  - platform: knxip
+    name: "Vykon FV"
+    group_address: "1/5/1"
+    dpt: "14"                   # DPT 14.x = IEEE754 4-byte float
+    unit_of_measurement: "W"
+
+# ── Binární sensory ───────────────────────────────────────────────────────────
+binary_sensor:
+  - platform: knxip
+    name: "Pohybove cidlo"
+    group_address: "1/3/5"
+
+# ── Switche (relé, osvětlení) ─────────────────────────────────────────────────
+switch:
+  - platform: knxip
+    name: "Svetlo obyvak"
+    group_address_command: "1/1/1"
+    group_address_state:   "1/1/2"   # optional, feedback ze sbernice
+
+# ── Output (stmívač DPT5, 0-255) ─────────────────────────────────────────────
+output:
+  - platform: knxip
+    id: dimmer_obyvak
+    group_address: "1/1/10"
+
+light:
+  - platform: monochromatic
+    name: "Stmivac obyvak"
+    output: dimmer_obyvak
+
+# ── Posílání hodnot ze senzorů ESP32 na KNX sběrnici ─────────────────────────
+# (např. teplota z lokálního DHT22 → KNX GA)
+  - platform: dht
+    pin: GPIO4
+    model: DHT22
+    temperature:
+      name: "ESP teplota"
+      id: esp_temp
+      on_value:
+        - lambda: |-
+            // Pošli hodnotu na KNX sběrnici
+            id(knxip_component_id).send_dpt9(0x0910, x);  // GA 1/2/16
+    humidity:
+      name: "ESP vlhkost"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: DEBUG
+
+api:
+ota:
+  - platform: esphome

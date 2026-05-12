@@ -21,53 +21,56 @@ struct GAListener {
 
 class KNXIPComponent : public Component {
  public:
-    void set_individual_address(const std::string& s) {
-        ia_ = ia_parse(s.c_str());
-    }
-    void set_multicast_group(const std::string& s) {
-        mcast_.fromString(s.c_str());
-    }
-    void set_port(uint16_t p) { port_ = p; }
+    void set_individual_address(const std::string& s) { ia_ = ia_parse(s.c_str()); }
+    void set_multicast_group(const std::string& s)    { mcast_.fromString(s.c_str()); }
+    void set_port(uint16_t p)                         { port_ = p; }
 
-    // Sensors/switches call this in setup()
     void add_listener(uint16_t ga, GACallback cb) {
         listeners_.push_back({ga, cb});
     }
 
-    // ── Send helpers ─────────────────────────────────────────────────────────
-
+    // ── Send helpers — uint16_t GA ───────────────────────────────────────────
     void send_bool(uint16_t ga, bool v) {
-        uint8_t buf[32]; size_t len;
-        len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, nullptr, 0, DPT::e1(v));
+        uint8_t buf[32];
+        size_t len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE,
+                                         nullptr, 0, DPT::e1(v));
         tx(buf, len);
-        ESP_LOGI(TAG_KNXIP, "TX bool GA=0x%04X val=%d", ga, v);
+        ESP_LOGI(TAG_KNXIP, "TX bool  GA=0x%04X val=%d", ga, v);
     }
-
     void send_dpt9(uint16_t ga, float v) {
         uint8_t d[2]; DPT::e9(v, d[0], d[1]);
-        uint8_t buf[32]; size_t len;
-        len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, d, 2);
+        uint8_t buf[32];
+        size_t len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, d, 2);
         tx(buf, len);
-        ESP_LOGI(TAG_KNXIP, "TX DPT9 GA=0x%04X val=%.2f", ga, v);
+        ESP_LOGI(TAG_KNXIP, "TX DPT9  GA=0x%04X val=%.2f", ga, v);
     }
-
     void send_dpt5(uint16_t ga, float v) {
-        uint8_t buf[32]; size_t len;
-        len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, nullptr, 0, DPT::e5(v));
+        uint8_t buf[32];
+        size_t len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE,
+                                         nullptr, 0, DPT::e5(v));
         tx(buf, len);
+        ESP_LOGI(TAG_KNXIP, "TX DPT5  GA=0x%04X val=%.0f", ga, v);
     }
-
     void send_dpt14(uint16_t ga, float v) {
         uint8_t d[4]; DPT::e14(v, d);
-        uint8_t buf[32]; size_t len;
-        len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, d, 4);
+        uint8_t buf[32];
+        size_t len = build_routing_frame(buf, ia_, ga, APCI_GROUP_WRITE, d, 4);
         tx(buf, len);
+        ESP_LOGI(TAG_KNXIP, "TX DPT14 GA=0x%04X val=%.2f", ga, v);
     }
+
+    // ── Send helpers — string GA "1/2/10" ────────────────────────────────────
+    // Tyto verze jsou použitelné přímo v ESPHome lambdách:
+    //   id(knxip_comp).send_bool("1/1/1", true)
+    //   id(knxip_comp).send_dpt9("1/2/10", 21.5f)
+    void send_bool(const std::string& ga_s, bool v)    { send_bool(ga_parse(ga_s.c_str()), v); }
+    void send_dpt9(const std::string& ga_s, float v)   { send_dpt9(ga_parse(ga_s.c_str()), v); }
+    void send_dpt5(const std::string& ga_s, float v)   { send_dpt5(ga_parse(ga_s.c_str()), v); }
+    void send_dpt14(const std::string& ga_s, float v)  { send_dpt14(ga_parse(ga_s.c_str()), v); }
 
     bool is_started() const { return started_; }
 
     // ── ESPHome lifecycle ────────────────────────────────────────────────────
-
     void setup() override {
         ESP_LOGI(TAG_KNXIP, "KNX/IP setup IA=0x%04X", ia_);
     }
@@ -78,11 +81,13 @@ class KNXIPComponent : public Component {
             if (!w || !w->is_connected()) { wifi_ms_ = 0; return; }
             if (!wifi_ms_) { wifi_ms_ = millis(); return; }
             if (millis() - wifi_ms_ < 500) return;
+
             if (udp_.beginMulticast(mcast_, port_)) {
                 started_ = true;
-                ESP_LOGI(TAG_KNXIP, "KNX/IP aktivan %s:%d", KNXIP_MULTICAST, port_);
+                ESP_LOGI(TAG_KNXIP, "KNX/IP aktivan %s:%d IA=0x%04X",
+                         KNXIP_MULTICAST, port_, ia_);
             } else {
-                ESP_LOGE(TAG_KNXIP, "beginMulticast selhal, retry...");
+                ESP_LOGE(TAG_KNXIP, "beginMulticast selhal, retry za 5s...");
                 wifi_ms_ = millis() - 4500;
             }
             return;
@@ -101,20 +106,19 @@ class KNXIPComponent : public Component {
         ESP_LOGD(TAG_KNXIP, "RX src=0x%04X dst=0x%04X apci=0x%03X dlen=%d",
                  frame.src, frame.dst, frame.apci_cmd, frame.data_len);
 
-        for (auto& l : listeners_) {
+        for (auto& l : listeners_)
             if (l.ga == frame.dst) l.cb(frame);
-        }
     }
 
     float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
  private:
-    WiFiUDP  udp_;
+    WiFiUDP   udp_;
     IPAddress mcast_{224, 0, 23, 12};
-    uint16_t  port_     = KNXIP_PORT;
-    uint16_t  ia_       = 0x1132;   // 1.1.50
-    bool      started_  = false;
-    uint32_t  wifi_ms_  = 0;
+    uint16_t  port_    = KNXIP_PORT;
+    uint16_t  ia_      = 0x1132;
+    bool      started_ = false;
+    uint32_t  wifi_ms_ = 0;
     std::vector<GAListener> listeners_;
 
     void tx(const uint8_t* buf, size_t len) {
@@ -124,9 +128,6 @@ class KNXIPComponent : public Component {
         udp_.endPacket();
     }
 };
-
-// Accessible by sensors/switches
-static KNXIPComponent* knxip_global = nullptr;
 
 }  // namespace knxip
 }  // namespace esphome
