@@ -1,0 +1,70 @@
+# ── Opravy pro display + watchdog ────────────────────────────────────────────
+#
+# PROBLÉM 1: display lambda trvá 230ms → WDT reset (limit 30ms)
+# FIX: přidat pages nebo omezit update_interval
+#
+# PROBLÉM 2: SPI conflict (boot:0xb = HSPI_FLASH_BOOT)
+# Při resetu drží SPI piny nesprávné stavy → ESP32 zkouší bootovat z SPI.
+# FIX: přidat reset_pin nebo sdílet SPI se správnými CS piny.
+#
+# PROBLÉM 3: Font chybí česká diakritika (Č=0x10c, á=0xe1, ě=0x11b)
+# FIX: přidat glyphs nebo použít ASCII string bez diakritiky.
+
+# ── Opravená font konfigurace ─────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: font_s
+    size: 16
+    glyphs: >-
+      !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~°ČčŠšŽžÁáÉéÍíÓóÚúŮůĚěŘřňň
+
+  - file: "gfonts://Roboto"
+    id: font_l
+    size: 28
+    glyphs: >-
+      0123456789.,°%CKNXOK- abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
+
+# ── Opravená display lambda – rozdělena na sekce, min. práce ─────────────────
+# Klíč: nevolat it.fill() každý frame (překresluje vše)
+# Místo toho: překresli jen hodnoty které se změnily.
+# Nejjednodušší fix: zvýšit update_interval nebo použít pages.
+
+display:
+  - platform: mipi_spi
+    model: ILI9341
+    invert_colors: false
+    id: main_display
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    reset_pin: GPIO4
+    rotation: 90
+    update_interval: 500ms    # ← klíčové: ne 60fps, jen 2x/s
+    lambda: |-
+      it.fill(Color(0, 0, 50));
+
+      // Použij ASCII - žádná diakritika = žádné font warningy
+      it.print(10, 8, id(font_s), id(col_white), "KNX/IP Monitor");
+
+      if (id(temp_sensor).has_state()) {
+        it.printf(10, 50, id(font_l), id(col_green),
+                  "%.1f°C", id(temp_sensor).state);
+      } else {
+        it.print(10, 50, id(font_l), id(col_white), "--.-°C");
+      }
+
+      // KNX status - pouze ASCII
+      bool knx_ok = id(knxip_comp).is_started();
+      it.printf(10, 100, id(font_s),
+                knx_ok ? id(col_green) : id(col_red),
+                "KNX: %s", knx_ok ? "OK" : "...");
+
+      // Tlacitka - bez diakritiky
+      it.filled_rectangle(10,  140, 140, 50, Color(0, 100, 0));
+      it.print(30, 158, id(font_s), id(col_white), "Svetlo ZAP");
+      it.filled_rectangle(170, 140, 140, 50, Color(100, 0, 0));
+      it.print(185, 158, id(font_s), id(col_white), "Svetlo VYP");
+
+      // Switch stav
+      // it.printf(10, 200, id(font_s), id(col_white), "Rele: %s",
+      //           id(knx_light).state ? "ZAP" : "VYP");

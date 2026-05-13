@@ -1,0 +1,180 @@
+esphome:
+  name: "esp32-knx-olimex-evb-display"
+
+esp32:
+  board: esp32dev
+  variant: esp32
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/KlasikTom/esphome-knxip
+    refresh: 300s
+    components: [ knxip ]
+
+# ── KNX/IP ────────────────────────────────────────────────────────────────────
+knxip:
+  id: knxip_comp
+  individual_address: "1.1.1"
+
+# ── Test interval ─────────────────────────────────────────────────────────────
+interval:
+  - interval: 15s
+    then:
+      - lambda: |-
+          float temp = 15.0f + (esp_random() % 150) / 10.0f;
+          id(knxip_comp).send_dpt9("1/3/1", temp);
+          ESP_LOGI("test", "Posilam teplotu: %.1f C", temp);
+
+# ── KNX senzor ────────────────────────────────────────────────────────────────
+sensor:
+  - platform: knxip
+    id: temp_sensor
+    name: "Teplota"
+    group_address: "1/2/10"
+    dpt: "9"
+    unit_of_measurement: "°C"
+
+# ── KNX switch → relé GPIO32 ──────────────────────────────────────────────────
+# ESP32-EVB relé je na GPIO32
+# group_address_state vynechán → čistě optimistic (publish ihned bez feedback)
+switch:
+  - platform: knxip
+    id: knx_light
+    name: "Rele"
+    group_address_command: "1/1/1"
+    # group_address_state: "1/1/2"  # odkomentuj pokud máš feedback ze sběrnice
+    pin:
+      number: GPIO32
+
+# ── BUT1 → toggle relé ────────────────────────────────────────────────────────
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO34
+      inverted: true
+      mode:
+        input: true
+    name: "BUT1"
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_press:
+      - switch.toggle: knx_light
+
+# ── WiFi ──────────────────────────────────────────────────────────────────────
+wifi:
+  min_auth_mode: WPA2
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Esp32-Knx-Olimex"
+    password: "TUU3dmVUvati"
+
+logger:
+  level: DEBUG
+api:
+  encryption:
+    key: "l9OSeZGtFkuLEXKEV/NCwvsT1Wj+PVCknazzlMgL+P4="
+ota:
+  - platform: esphome
+    password: "53eb7664f4acf1a15c00699ceee2f22a"
+web_server:
+  port: 80
+captive_portal:
+
+# ── SPI bus – správné piny dle UEXT schématu ESP32-EVB ───────────────────────
+# UEXT pin 9 = GPIO14 = CLK
+# UEXT pin 7 = GPIO15 = MOSI (HSPIQ)
+# UEXT pin 8 = GPIO2  = MISO (HSPID)
+# UEXT pin 10= GPIO17 = CS display
+# UEXT pin 3 = GPIO4  = DC (data/command) ← drát z MOD-LCD DC pinu
+# UEXT pin 5 = GPIO16 = RST display (nebo nechat nezapojeno)
+spi:
+  clk_pin:  GPIO14   # UEXT pin 9
+  mosi_pin: GPIO15   # UEXT pin 7 (HSPIQ/HS2_CMD)
+  miso_pin: GPIO2    # UEXT pin 8 (HSPID/HS2_DATA0)
+
+# ── Fonty – pouze ASCII ───────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: font_s
+    size: 16
+    glyphs: ' !"#%&()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ[]abcdefghijklmnopqrstuvwxyz°C'
+  - file: "gfonts://Roboto"
+    id: font_l
+    size: 28
+    glyphs: '0123456789.,-°C '
+
+color:
+  - id: col_white
+    red: 100%; green: 100%; blue: 100%
+  - id: col_green
+    green: 100%
+  - id: col_red
+    red: 100%
+
+# ── Display ILI9341 – opravené piny ──────────────────────────────────────────
+# CS  = GPIO17 (UEXT pin 10)
+# DC  = GPIO4  (UEXT pin 3) ← MOD-LCD DC/RS pin
+# RST = GPIO16 (UEXT pin 5) ← nebo nechat bez resetu
+display:
+  - platform: mipi_spi
+    model: ILI9341
+    invert_colors: false
+    id: main_display
+    cs_pin: GPIO17     # UEXT pin 10
+    dc_pin: GPIO4      # UEXT pin 3 (MOD-LCD DC/RS)
+    reset_pin: GPIO16  # UEXT pin 5 (nebo zakomentuj)
+    rotation: 90
+    update_interval: 500ms  # NUTNE: lambda ~230ms → WDT reset bez tohoto
+    lambda: |-
+      it.fill(Color(0, 0, 50));
+      it.print(10, 8, id(font_s), id(col_white), "KNX/IP Monitor");
+
+      if (id(temp_sensor).has_state())
+        it.printf(10, 50, id(font_l), id(col_green), "%.1fC", id(temp_sensor).state);
+      else
+        it.print(10, 50, id(font_l), id(col_white), "--.-C");
+
+      bool knx_ok = id(knxip_comp).is_started();
+      it.printf(10, 100, id(font_s),
+                knx_ok ? id(col_green) : id(col_red),
+                "KNX: %s", knx_ok ? "OK" : "cekam...");
+
+      it.printf(10, 130, id(font_s), id(col_white), "Rele: %s",
+                id(knx_light).state ? "ZAP" : "VYP");
+
+      // Virtualni tlacitka
+      it.filled_rectangle(10,  170, 140, 45, Color(0, 100, 0));
+      it.print(45, 185, id(font_s), id(col_white), "ZAP");
+      it.filled_rectangle(170, 170, 140, 45, Color(100, 0, 0));
+      it.print(205, 185, id(font_s), id(col_white), "VYP");
+
+# ── Touch NS2009 – I2C (ne SPI!) ─────────────────────────────────────────────
+# NS2009 je I2C touchscreen controller
+# SCL = GPIO16 (UEXT pin 5) - KOLIZE s RST displayu! Viz poznamka nize.
+# SDA = GPIO13 (UEXT pin 6)
+#
+# POZNAMKA: GPIO16 je sdilet RST display A SCL touch - zvol jedno:
+# Bud pouzij RST display (GPIO16) NEBO I2C touch (GPIO16=SCL)
+# Doporuceni: vynech reset_pin u displayu a pouzij GPIO16 pro I2C SCL
+
+i2c:
+  scl_pin: GPIO16   # UEXT pin 5
+  sda_pin: GPIO13   # UEXT pin 6
+
+touchscreen:
+  - platform: lilygo_t5_47  # NS2009 neni v ESPHome nativne - pouzij generic i2c touch
+    # ESPHome nema primo "ns2009" platform - viz poznamka
+    id: touch
+
+# POZNAMKA k NS2009:
+# ESPHome 2026.x nema nativni ns2009 driver.
+# Moznosti:
+# 1. custom_component s I2C reads na adresu 0x48
+# 2. pouzit "gt911" nebo jiny generic i2c touch driver
+# 3. Zatim touch vynechat a pouzit jen fyzicke tlacitko BUT1
+
