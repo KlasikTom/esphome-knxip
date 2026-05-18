@@ -8,17 +8,70 @@
 #define KNXIP_PORT           3671
 #define KNXIP_HEADER_SIZE    6
 
-// Service types
-#define KNXIP_ROUTING_INDICATION  0x0530
+// Service types — Routing
+#define KNXIP_ROUTING_INDICATION     0x0530
+#define KNXIP_ROUTING_LOST_MESSAGE   0x0531
+#define KNXIP_ROUTING_BUSY           0x0532
 
-// CEMI
-#define CEMI_L_DATA_IND  0x29
+// Service types — Core (Search, Description, Connect)
+#define KNXIP_SEARCH_REQUEST         0x0201
+#define KNXIP_SEARCH_RESPONSE        0x0202
+#define KNXIP_DESCRIPTION_REQUEST    0x0203
+#define KNXIP_DESCRIPTION_RESPONSE   0x0204
+#define KNXIP_CONNECT_REQUEST        0x0205
+#define KNXIP_CONNECT_RESPONSE       0x0206
+#define KNXIP_CONNECTIONSTATE_REQUEST  0x0207
+#define KNXIP_CONNECTIONSTATE_RESPONSE 0x0208
+#define KNXIP_DISCONNECT_REQUEST     0x0209
+#define KNXIP_DISCONNECT_RESPONSE    0x020A
 
-// APCI commands (masked from APCI bytes)
+// Service types — Tunneling
+#define KNXIP_TUNNELING_REQUEST      0x0420
+#define KNXIP_TUNNELING_ACK          0x0421
+
+// CEMI message codes
+#define CEMI_L_DATA_REQ  0x11   // request (from ETS via tunnel)
+#define CEMI_L_DATA_IND  0x29   // indication (received from bus)
+#define CEMI_L_DATA_CON  0x2E   // confirmation (TX result)
+
+// APCI commands
 #define APCI_GROUP_READ      0x0000
 #define APCI_GROUP_RESPONSE  0x0040
 #define APCI_GROUP_WRITE     0x0080
 #define APCI_CMD_MASK        0x03C0
+
+// DIB description types
+#define DIB_DEVICE_INFO        0x01
+#define DIB_SUPP_SVC_FAMILIES  0x02
+#define DIB_IP_CONFIG          0x03
+#define DIB_IP_CUR_CONFIG      0x04
+#define DIB_KNX_ADDRESSES      0x05
+
+// Connection types
+#define CRI_TUNNEL_CONNECTION  0x04
+#define CRI_DEVICE_MGMT_CONN   0x03
+
+// Tunnel layer types
+#define TUNNEL_LINKLAYER   0x02
+#define TUNNEL_RAW         0x04
+#define TUNNEL_BUSMONITOR  0x80
+
+// KNX medium
+#define KNX_MEDIUM_TP   0x02
+#define KNX_MEDIUM_IP   0x20
+
+// KNXnet/IP error codes
+#define E_NO_ERROR              0x00
+#define E_HOST_PROT_TYPE        0x01
+#define E_VERSION_NOT_SUPPORTED 0x02
+#define E_SEQUENCE_NUMBER       0x04
+#define E_CONNECTION_ID         0x21
+#define E_CONN_TYPE             0x22
+#define E_CONN_OPTION           0x23
+#define E_NO_MORE_CONNECTIONS   0x24
+#define E_DATA_CONNECTION       0x26
+#define E_KNX_CONNECTION        0x27
+#define E_TUNNELING_LAYER       0x29
 
 namespace esphome {
 namespace knxip {
@@ -82,11 +135,41 @@ struct DPT {
     }
 };
 
-// ─── CEMI frame builder/parser ───────────────────────────────────────────────
+// ─── ParsedCEMI ──────────────────────────────────────────────────────────────
+
+struct ParsedCEMI {
+    bool     valid       = false;
+    uint8_t  msg_code    = CEMI_L_DATA_IND;  // CEMI_L_DATA_REQ/IND/CON
+    bool     is_group    = true;              // group vs individual addressing
+    uint16_t src         = 0;
+    uint16_t dst         = 0;
+    uint16_t apci_cmd    = 0;       // APCI_GROUP_READ / RESPONSE / WRITE
+    uint8_t  data[8]     = {};      // decoded value bytes
+    uint8_t  data_len    = 0;
+    uint8_t  small_val   = 0;       // for data_len==0 (6-bit) values
+    // Raw CEMI bytes for transparent forwarding (used in tunneling/TP bridge)
+    uint8_t  cemi_raw[32] = {};
+    uint8_t  cemi_raw_len = 0;
+};
+
+// ─── KNXnet/IP header helpers ────────────────────────────────────────────────
+
+inline void write_knxip_header(uint8_t* buf, uint16_t service, uint16_t total_len) {
+    buf[0] = 0x06; buf[1] = 0x10;
+    buf[2] = (service >> 8) & 0xFF;
+    buf[3] =  service & 0xFF;
+    buf[4] = (total_len >> 8) & 0xFF;
+    buf[5] =  total_len & 0xFF;
+}
+
+inline uint16_t read_knxip_service(const uint8_t* buf, int len) {
+    if (len < 6 || buf[0] != 0x06 || buf[1] != 0x10) return 0;
+    return ((uint16_t)buf[2] << 8) | buf[3];
+}
+
+// ─── CEMI frame builder for routing ──────────────────────────────────────────
 
 // Returns total frame length written into buf[]
-// For "small" values (1-bit, etc.): data_len=0, small_val used
-// For multi-byte: data != nullptr, data_len > 0
 inline size_t build_routing_frame(uint8_t* buf,
                                    uint16_t src, uint16_t dst,
                                    uint16_t apci_cmd,
@@ -105,40 +188,72 @@ inline size_t build_routing_frame(uint8_t* buf,
     c[4] = (src >> 8) & 0xFF; c[5] = src & 0xFF;
     c[6] = (dst >> 8) & 0xFF; c[7] = dst & 0xFF;
 
-    // APDU (starts at c[9]):
-    //   c[9]  = TPCI | APCI[9:8]
-    //   c[10] = APCI[7:0]  (for small: | small_val[5:0])
-    //   c[11+]= data bytes
     c[9]  = 0x00 | (uint8_t)((apci_cmd >> 8) & 0x03);
     c[10] = (uint8_t)(apci_cmd & 0xFF);
 
     if (data_len == 0) {
-        // small value (≤6 bit) encoded in APCI low byte
         c[10] |= (small_val & 0x3F);
-        c[8]   = 0x01;          // APDU len - 1 = 1 (just TPCI+APCI)
+        c[8]   = 0x01;
     } else {
         memcpy(&c[11], data, data_len);
-        c[8] = 1 + data_len;    // APDU len - 1
+        c[8] = 1 + data_len;
     }
 
-    size_t cemi_len = 9 + 1 + (data_len == 0 ? 0 : data_len) + 1;
-    // Actually: c[0..8] = 9 bytes fixed, c[9..10] = TPCI+APCI = 2, c[11+] = data
-    cemi_len = 11 + data_len;
+    size_t cemi_len = 11 + data_len;
     size_t total = 6 + cemi_len;
     buf[4] = (total >> 8) & 0xFF;
     buf[5] =  total & 0xFF;
     return total;
 }
 
-struct ParsedCEMI {
-    bool    valid     = false;
-    uint16_t src      = 0;
-    uint16_t dst      = 0;
-    uint16_t apci_cmd = 0;     // APCI_GROUP_READ / RESPONSE / WRITE
-    uint8_t  data[8]  = {};    // decoded value bytes
-    uint8_t  data_len = 0;
-    uint8_t  small_val = 0;    // for data_len==0 (6-bit) values
-};
+// ─── CEMI frame parser (general — handles any CEMI, not just routing) ─────────
+
+inline ParsedCEMI parse_cemi_frame(const uint8_t* cemi, int cemi_len) {
+    ParsedCEMI r;
+    if (cemi_len < 9) return r;
+
+    r.msg_code = cemi[0];
+    uint8_t add = cemi[1];
+    int o = 2 + add;            // offset to standard CEMI fields
+    if (cemi_len < o + 7) return r;
+
+    // ctrl2 bit 7: 1 = group addressing, 0 = individual addressing
+    r.is_group = (cemi[o+1] & 0x80) != 0;
+    r.src = ((uint16_t)cemi[o+2] << 8) | cemi[o+3];
+    r.dst = ((uint16_t)cemi[o+4] << 8) | cemi[o+5];
+
+    uint8_t apdu_len = cemi[o+6];       // APDU length - 1
+    if (cemi_len < o + 7 + 1 + (int)apdu_len) return r;
+    const uint8_t* apdu = &cemi[o+7];
+
+    uint8_t tpci = apdu[0];
+    if ((tpci & 0xC0) == 0x00) {
+        // Group data (T_DATA_GROUP)
+        r.apci_cmd = (uint16_t)((apdu[0] & 0x03) << 8) | apdu[1];
+        r.apci_cmd &= APCI_CMD_MASK;
+
+        if (apdu_len <= 1) {
+            r.small_val = apdu[1] & 0x3F;
+            r.data[0]   = r.small_val;
+            r.data_len  = 0;
+        } else {
+            r.data_len = apdu_len - 1;
+            if (r.data_len > (uint8_t)sizeof(r.data)) r.data_len = sizeof(r.data);
+            memcpy(r.data, &apdu[2], r.data_len);
+        }
+    }
+    // Management/connected frames: apci_cmd stays 0, data_len stays 0
+    // but cemi_raw carries the full frame for transparent forwarding
+
+    // Store raw CEMI for tunneling forwarding
+    r.cemi_raw_len = (cemi_len < (int)sizeof(r.cemi_raw)) ? (uint8_t)cemi_len : (uint8_t)sizeof(r.cemi_raw);
+    memcpy(r.cemi_raw, cemi, r.cemi_raw_len);
+
+    r.valid = true;
+    return r;
+}
+
+// ─── Routing frame parser ─────────────────────────────────────────────────────
 
 inline ParsedCEMI parse_routing_frame(const uint8_t* buf, int len) {
     ParsedCEMI r;
@@ -146,39 +261,9 @@ inline ParsedCEMI parse_routing_frame(const uint8_t* buf, int len) {
     if (buf[0] != 0x06 || buf[1] != 0x10) return r;
     uint16_t svc = ((uint16_t)buf[2] << 8) | buf[3];
     if (svc != KNXIP_ROUTING_INDICATION) return r;
+    if (len < 6 + 9) return r;
 
-    const uint8_t* c = buf + 6;            // CEMI
-    if (len < 6 + 11) return r;
-
-    uint8_t add = c[1];                    // additional info length
-    int o = 2 + add;                       // offset to standard CEMI
-    if (len < 6 + o + 9) return r;
-
-    r.src = ((uint16_t)c[o+2] << 8) | c[o+3];
-    r.dst = ((uint16_t)c[o+4] << 8) | c[o+5];
-
-    uint8_t apdu_len = c[o+6];             // APDU length - 1
-    const uint8_t* apdu = &c[o+7];
-
-    uint8_t tpci = apdu[0];
-    if ((tpci & 0xFC) != 0x00) return r;  // only Data Group, seq=0
-
-    r.apci_cmd = (uint16_t)((apdu[0] & 0x03) << 8) | apdu[1];
-    r.apci_cmd &= APCI_CMD_MASK;
-
-    if (apdu_len <= 1) {
-        // small value (6-bit) in low bits of apdu[1]
-        r.small_val = apdu[1] & 0x3F;
-        r.data[0]   = r.small_val;
-        r.data_len  = 0;            // signal: small value
-    } else {
-        r.data_len = apdu_len - 1;
-        if (r.data_len > sizeof(r.data)) r.data_len = sizeof(r.data);
-        memcpy(r.data, &apdu[2], r.data_len);
-    }
-
-    r.valid = true;
-    return r;
+    return parse_cemi_frame(buf + 6, len - 6);
 }
 
 }  // namespace knxip

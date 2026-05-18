@@ -15,30 +15,33 @@ class KNXIPSwitch : public switch_::Switch, public Component {
     void set_gpio_pin(GPIOPin* p)             { pin_ = p; }
 
     void setup() override {
-        if (pin_) { pin_->setup(); pin_->digital_write(false); }
+        // GPIO inicializace — stav přežije reboot (restore_state)
+        if (pin_) {
+            pin_->setup();
+            pin_->digital_write(false);
+        }
 
-        // Poslouchej na state GA (feedback ze sběrnice)
+        // State GA — feedback ze sběrnice (NEPŘEPISUJE GPIO pokud právě probíhá lokální akce)
         if (ga_state_) {
             knxip_->add_listener(ga_state_, [this](const ParsedCEMI& f) {
-                if (f.apci_cmd == APCI_GROUP_WRITE || f.apci_cmd == APCI_GROUP_RESPONSE) {
-                    bool v = DPT::d1(f.small_val);
-                    if (pin_) pin_->digital_write(v);
-                    publish_state(v);
-                    ESP_LOGD("knxip.switch", "State GA feedback: %d", v);
-                }
+                if (f.apci_cmd != APCI_GROUP_WRITE && f.apci_cmd != APCI_GROUP_RESPONSE) return;
+                if (local_action_ms_ && millis() - local_action_ms_ < 500) return; // ignoruj echo 500ms
+                bool v = DPT::d1(f.small_val);
+                gpio_write_(v);
+                publish_state(v);
+                ESP_LOGD("knxip.switch", "KNX state GA: %d", v);
             });
         }
 
-        // Poslouchej i na command GA (příkazy od jiných zdrojů)
+        // Command GA — příkazy od jiných KNX zdrojů
         if (ga_cmd_ && ga_cmd_ != ga_state_) {
             knxip_->add_listener(ga_cmd_, [this](const ParsedCEMI& f) {
-                if (f.apci_cmd == APCI_GROUP_WRITE) {
-                    bool v = DPT::d1(f.small_val);
-                    if (pin_) pin_->digital_write(v);
-                    // Optimistic: publish ihned bez čekání na state GA
-                    publish_state(v);
-                    ESP_LOGD("knxip.switch", "Cmd GA: %d", v);
-                }
+                if (f.apci_cmd != APCI_GROUP_WRITE) return;
+                if (local_action_ms_ && millis() - local_action_ms_ < 500) return;
+                bool v = DPT::d1(f.small_val);
+                gpio_write_(v);
+                publish_state(v);
+                ESP_LOGD("knxip.switch", "KNX cmd GA: %d", v);
             });
         }
 
@@ -49,13 +52,13 @@ class KNXIPSwitch : public switch_::Switch, public Component {
     float get_setup_priority() const override { return setup_priority::AFTER_WIFI - 1.0f; }
 
  protected:
+    // Volá se z ESPHome (HA, web UI, lambda turn_on/off/toggle, BUT1 toggle)
     void write_state(bool v) override {
-        // Okamžitě aplikuj lokálně (optimistic) - nečekej na KNX feedback
-        if (pin_) pin_->digital_write(v);
-        publish_state(v);  // ← klíčové: publish PŘED odesláním na KNX
-        // Pak odešli telegram na sběrnici
-        knxip_->send_bool(ga_cmd_, v);
-        ESP_LOGI("knxip.switch", "write_state: %d → GA=0x%04X", v, ga_cmd_);
+        local_action_ms_ = millis();  // označ lokální akci
+        gpio_write_(v);               // ← GPIO PRVNÍ (bez ohledu na KNX)
+        publish_state(v);             // ← stav do ESPHome/HA
+        knxip_->send_bool(ga_cmd_, v); // ← pak pošli na sběrnici
+        ESP_LOGI("knxip.switch", "write_state: %d GPIO=%s", v, pin_ ? "OK" : "N/A");
     }
 
  private:
@@ -63,6 +66,14 @@ class KNXIPSwitch : public switch_::Switch, public Component {
     GPIOPin*        pin_{nullptr};
     uint16_t        ga_cmd_{0};
     uint16_t        ga_state_{0};
+    uint32_t        local_action_ms_{0};  // timestamp poslední lokální akce
+
+    void gpio_write_(bool v) {
+        if (pin_) {
+            pin_->digital_write(v);
+            ESP_LOGD("knxip.switch", "GPIO → %d", v);
+        }
+    }
 };
 
 }  // namespace knxip
